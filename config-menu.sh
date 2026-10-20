@@ -2861,19 +2861,19 @@ config_minimax() {
     echo ""
     echo -e "${CYAN}选择模型:${NC}"
     echo ""
-    print_menu_item "1" "MiniMax-M3 (Recommended, latest flagship)" "⭐"
-    print_menu_item "2" "MiniMax-M2.7" "🔹"
-    print_menu_item "3" "Custom model name" "✏️"
+    print_menu_item "1" "MiniMax-M3.1-Flash (Recommended)" "⭐"
+    print_menu_item "2" "MiniMax-M3" "🔹"
+    print_menu_item "3" "Custom or legacy model ID" "✏️"
     echo ""
 
     read -p "$(echo -e "${YELLOW}Select [1-3] (default: 1): ${NC}")" model_choice < "$TTY_INPUT"
     model_choice=${model_choice:-1}
 
     case $model_choice in
-        1) model="MiniMax-M3" ;;
-        2) model="MiniMax-M2.7" ;;
-        3) read -p "$(echo -e "${YELLOW}Enter model name: ${NC}")" model < "$TTY_INPUT" ;;
-        *) model="MiniMax-M3" ;;
+        1) model="MiniMax-M3.1-Flash" ;;
+        2) model="MiniMax-M3" ;;
+        3) read -r -p "$(echo -e "${YELLOW}Enter model ID: ${NC}")" model < "$TTY_INPUT" ;;
+        *) model="MiniMax-M3.1-Flash" ;;
     esac
     
     # 保存到 OpenClaw 环境变量配置
@@ -2975,16 +2975,18 @@ config_opencode() {
     if [ "$provider" = "opencode-go" ]; then
         print_menu_item "1" "kimi-k2.5 (推荐, Go 默认)" "⭐"
         print_menu_item "2" "glm-5" "🇨🇳"
-        print_menu_item "3" "minimax-m2.5" "🤖"
-        print_menu_item "4" "自定义模型名称" "✏️"
+        print_menu_item "3" "minimax-m3.1-flash-free" "🤖"
+        print_menu_item "4" "minimax-m3" "🤖"
+        print_menu_item "5" "Custom or legacy model ID" "✏️"
         echo ""
-        read -p "$(echo -e "${YELLOW}请选择 [1-4] (默认: 1): ${NC}")" model_choice < "$TTY_INPUT"
+        read -p "$(echo -e "${YELLOW}Select [1-5] (default: 1): ${NC}")" model_choice < "$TTY_INPUT"
         model_choice=${model_choice:-1}
         case $model_choice in
             1) model="kimi-k2.5" ;;
             2) model="glm-5" ;;
-            3) model="minimax-m2.5" ;;
-            4) read -p "$(echo -e "${YELLOW}输入模型名称: ${NC}")" model < "$TTY_INPUT" ;;
+            3) model="minimax-m3.1-flash-free" ;;
+            4) model="minimax-m3" ;;
+            5) read -r -p "$(echo -e "${YELLOW}Enter model ID: ${NC}")" model < "$TTY_INPUT" ;;
             *) model="kimi-k2.5" ;;
         esac
     else
@@ -5700,61 +5702,56 @@ ensure_openclaw_init() {
 # 为 MiniMax 写入官方兼容 provider 配置，避免旧版本出现 Unknown model
 ensure_minimax_provider_config() {
     local provider="$1"   # minimax|minimax-cn
-    local model="$2"      # MiniMax-M3 / MiniMax-M2.7
+    local model="$2"      # Keep explicit custom and legacy model IDs.
     local config_file="$3"
     local base_url="https://api.minimax.io/anthropic"
     if [ "$provider" = "minimax-cn" ]; then
-        base_url="https://api.minimaxi.com/anthropic"
+        base_url="https://api.minimax.cn/anthropic"
     fi
 
     mkdir -p "$(dirname "$config_file")" 2>/dev/null || true
     [ -f "$config_file" ] || echo "{}" > "$config_file"
 
     if command -v node &> /dev/null; then
-        node -e "
+        node - "$config_file" "$provider" "$model" "$base_url" <<'JSEOF'
 const fs = require('fs');
-const file = '$config_file';
-const provider = '$provider';
-const model = '$model';
-const baseUrl = '$base_url';
+const [file, provider, model, baseUrl] = process.argv.slice(2);
 let cfg = {};
 try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
 cfg.models ||= {};
 cfg.models.mode ||= 'merge';
 cfg.models.providers ||= {};
 const p = cfg.models.providers[provider] || {};
-const models = Array.isArray(p.models) ? p.models : [];
+const savedModels = Array.isArray(p.models) ? p.models : [];
+// The schema has a flat price: M3 uses its standard short-context rate.
+// Cache-write pricing is unspecified; do not invent a value.
 const catalog = {
-  'MiniMax-M3': { name: 'MiniMax M3', reasoning: true, input: ['text', 'image', 'video'], cost: { input: 0.6, output: 2.4, cacheRead: 0.12, cacheWrite: null }, contextWindow: 1000000, maxTokens: 8192 },
-  'MiniMax-M2.7': { name: 'MiniMax M2.7', reasoning: true, input: ['text'], cost: { input: 0.3, output: 1.2, cacheRead: 0.06, cacheWrite: 0.375 }, contextWindow: 204800, maxTokens: 8192 },
+  'MiniMax-M3.1-Flash': { name: 'MiniMax M3.1 Flash', reasoning: true, input: ['text', 'image', 'video'], cost: { input: 0.15, output: 0.6, cacheRead: 0.015 }, contextWindow: 1000000, maxTokens: 524288 },
+  'MiniMax-M3': { name: 'MiniMax M3', reasoning: true, input: ['text', 'image', 'video'], cost: { input: 0.3, output: 1.2, cacheRead: 0.06 }, contextWindow: 1000000, maxTokens: 8192 },
 };
-for (const id of ['MiniMax-M3', 'MiniMax-M2.7']) {
-  const existing = models.find(m => m && m.id === id);
-  const refreshed = { id, ...catalog[id] };
-  if (existing) Object.assign(existing, refreshed);
-  else models.push(refreshed);
-}
+const models = Object.entries(catalog).map(([id, metadata]) => ({
+  ...savedModels.find(m => m && m.id === id), id, ...metadata
+}));
+// Existing entries are user configuration, including explicit legacy IDs.
+models.push(...savedModels.filter(m => !m || !Object.hasOwn(catalog, m.id)));
 cfg.models.providers[provider] = {
-  ...p,
   baseUrl,
   api: 'anthropic-messages',
   authHeader: true,
+  ...p,
   models
 };
 cfg.agents ||= {};
 cfg.agents.defaults ||= {};
 cfg.agents.defaults.models ||= {};
 const ref = provider + '/' + model;
-cfg.agents.defaults.models[ref] = { ...(cfg.agents.defaults.models[ref] || {}), alias: 'Minimax' };
+cfg.agents.defaults.models[ref] = { alias: 'Minimax', ...(cfg.agents.defaults.models[ref] || {}) };
 fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
-" >/dev/null 2>&1 || true
+JSEOF
     elif command -v python3 &> /dev/null; then
-        python3 - <<PYEOF
-import json, os
-file = os.path.expanduser("$config_file")
-provider = "$provider"
-model = "$model"
-base_url = "$base_url"
+        python3 - "$config_file" "$provider" "$model" "$base_url" <<'PYEOF'
+import json, sys
+file, provider, model, base_url = sys.argv[1:]
 try:
     with open(file, "r") as f:
         cfg = json.load(f)
@@ -5764,27 +5761,29 @@ cfg.setdefault("models", {})
 cfg["models"].setdefault("mode", "merge")
 cfg["models"].setdefault("providers", {})
 p = cfg["models"]["providers"].get(provider, {})
-models = p.get("models", []) if isinstance(p.get("models"), list) else []
+saved_models = p.get("models", []) if isinstance(p.get("models"), list) else []
+# The schema has a flat price: M3 uses its standard short-context rate.
+# Cache-write pricing is unspecified; do not invent a value.
 catalog = {
-    "MiniMax-M3": {"name": "MiniMax M3", "reasoning": True, "input": ["text", "image", "video"], "cost": {"input": 0.6, "output": 2.4, "cacheRead": 0.12, "cacheWrite": None}, "contextWindow": 1000000, "maxTokens": 8192},
-    "MiniMax-M2.7": {"name": "MiniMax M2.7", "reasoning": True, "input": ["text"], "cost": {"input": 0.3, "output": 1.2, "cacheRead": 0.06, "cacheWrite": 0.375}, "contextWindow": 204800, "maxTokens": 8192},
+    "MiniMax-M3.1-Flash": {"name": "MiniMax M3.1 Flash", "reasoning": True, "input": ["text", "image", "video"], "cost": {"input": 0.15, "output": 0.6, "cacheRead": 0.015}, "contextWindow": 1000000, "maxTokens": 524288},
+    "MiniMax-M3": {"name": "MiniMax M3", "reasoning": True, "input": ["text", "image", "video"], "cost": {"input": 0.3, "output": 1.2, "cacheRead": 0.06}, "contextWindow": 1000000, "maxTokens": 8192},
 }
-for mid in ("MiniMax-M3", "MiniMax-M2.7"):
-    refreshed = {"id": mid, **catalog[mid]}
-    existing = next((item for item in models if isinstance(item, dict) and item.get("id") == mid), None)
-    if existing is not None:
-        existing.update(refreshed)
-    else:
-        models.append(refreshed)
+models = []
+for mid, metadata in catalog.items():
+    existing = next((item for item in saved_models if isinstance(item, dict) and item.get("id") == mid), {})
+    models.append({**existing, "id": mid, **metadata})
+# Existing entries are user configuration, including explicit legacy IDs.
+models.extend(item for item in saved_models if not isinstance(item, dict) or item.get("id") not in catalog)
 cfg["models"]["providers"][provider] = {
-    **(p if isinstance(p, dict) else {}),
     "baseUrl": base_url,
     "api": "anthropic-messages",
     "authHeader": True,
+    **p,
     "models": models
 }
-cfg.setdefault("agents", {}).setdefault("defaults", {}).setdefault("models", {})
-cfg["agents"]["defaults"]["models"][f"{provider}/{model}"] = {"alias": "Minimax"}
+defaults = cfg.setdefault("agents", {}).setdefault("defaults", {}).setdefault("models", {})
+ref = f"{provider}/{model}"
+defaults[ref] = {"alias": "Minimax", **defaults.get(ref, {})}
 with open(file, "w") as f:
     json.dump(cfg, f, indent=2)
 PYEOF
