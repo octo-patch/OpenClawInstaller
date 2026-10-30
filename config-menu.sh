@@ -5706,7 +5706,7 @@ ensure_minimax_provider_config() {
     local config_file="$3"
     local base_url="https://api.minimax.io/anthropic"
     if [ "$provider" = "minimax-cn" ]; then
-        base_url="https://api.minimax.cn/anthropic"
+        base_url="https://api.minimaxi.com/anthropic"
     fi
 
     mkdir -p "$(dirname "$config_file")" 2>/dev/null || true

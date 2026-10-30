@@ -45,7 +45,7 @@ class MiniMaxConfigTests(unittest.TestCase):
 
     def test_fresh_catalog_and_region_runtime_parity(self):
         for source in ("install.sh", "config-menu.sh"):
-            for provider, host in (("minimax", "api.minimax.io"), ("minimax-cn", "api.minimax.cn")):
+            for provider, host in (("minimax", "api.minimax.io"), ("minimax-cn", "api.minimaxi.com")):
                 results = []
                 for runtime in ("node", "python"):
                     with self.subTest(source=source, provider=provider, runtime=runtime):
